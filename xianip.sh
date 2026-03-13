@@ -2096,7 +2096,7 @@ if [[ -n "$FILTER_TAG" && "$FOUND" -eq 0 ]]; then
   exit 1
 fi
 
-sort -t $'\t' -k1,1 "$TMP_ROWS" | /usr/local/lib/vless-reality/render_table.py vless
+sort -t $'\t' -k3,3n "$TMP_ROWS" | /usr/local/lib/vless-reality/render_table.py vless
 __VR_FILE_21__
 chmod 755 '/usr/local/sbin/vless_audit.sh'
 
