@@ -1,0 +1,445 @@
+==================================================
+使用方法（基于新增 IPv6 临时节点版 xianip.sh / vless.sh 脚本）
+==================================================
+
+你当前是 root（不需要 sudo）
+直接按以下顺序运行。
+
+重要说明：
+- 原 IPv4 主节点和 IPv4 临时节点用法保持不变。
+- IPv6 只新增到“临时节点系统”。
+- 不建议只把订阅链接里的 IPv4 地址手动改成 IPv6 地址；服务端必须真的监听 IPv6，并且 IP 限制规则也要走 IPv6 规则。
+- IPv6 临时节点需要单独准备一个 AAAA 记录域名。
+
+域名要求：
+- PUBLIC_DOMAIN      -> A 记录指向 VPS 的公网 IPv4
+- PUBLIC_IPV6_DOMAIN -> AAAA 记录指向 VPS 的公网 IPv6
+
+
+1）先执行一键总脚本
+
+如果你已经把新版脚本上传/覆盖到你的 GitHub 原地址：
+
+apt update && apt install -y curl
+bash <(curl -fsSL https://raw.githubusercontent.com/liucong552-art/jichang/main/vless.sh)
+
+如果你是把新版脚本本地上传到服务器执行：
+
+apt update && apt install -y curl
+bash ./vless_dualstack_temp_debian12.sh
+
+
+2）如需你自己的系统更新流程，可更新后重启
+
+apt-get update && apt-get -y full-upgrade
+reboot
+
+
+3）重启回来后，先编辑主配置文件
+
+nano /etc/default/vless-reality
+
+最少改成这样（按你自己的域名填写）：
+
+PUBLIC_DOMAIN=proxy-v4.example.com
+PUBLIC_IPV6_DOMAIN=proxy-v6.example.com
+CAMOUFLAGE_DOMAIN=www.cloudflare.com
+REALITY_DEST=www.cloudflare.com:443
+REALITY_SNI=www.cloudflare.com
+PORT=443
+NODE_NAME=MY-VLESS
+
+说明：
+- PUBLIC_DOMAIN 是原来的 IPv4 主域名，必须有 A 记录。
+- PUBLIC_IPV6_DOMAIN 是新增的 IPv6 临时节点域名，必须有 AAAA 记录。
+- CAMOUFLAGE_DOMAIN / REALITY_DEST / REALITY_SNI 仍按原逻辑使用。
+- 主节点仍然按 IPv4 主节点创建；IPv6 是给临时节点用的。
+
+
+4）创建 VLESS Reality 主节点
+
+bash /root/onekey_reality_ipv4.sh
+
+
+==================================================
+临时节点系统（VLESS Reality 临时订阅）
+==================================================
+
+创建临时节点时同时限制：
+- IP_LIMIT=3
+- PQ_GIB=1
+- 默认 sticky = 120 秒
+
+说明：
+- 不写 IP_VERSION 时，默认就是 IPv4，保持原用法。
+- 创建 IPv6 临时节点时，加 IP_VERSION=6。
+- IPv4 和 IPv6 临时节点不要同时抢同一个端口；如果同时存在，请使用不同端口。
+
+
+-----------------------------
+IPv4 临时节点（原用法保持不变）
+-----------------------------
+
+按分钟：
+id=tmp1m PORT_START=40000 PORT_END=40000 IP_LIMIT=3 PQ_GIB=1 D=$((1*60)) vless_mktemp.sh
+
+按小时：
+id=tmp1h PORT_START=40000 PORT_END=40000 IP_LIMIT=3 PQ_GIB=1 D=$((1*3600)) vless_mktemp.sh
+
+按天：
+id=tmp1d PORT_START=40000 PORT_END=40000 IP_LIMIT=3 PQ_GIB=1 D=$((1*24*3600)) vless_mktemp.sh
+
+
+-----------------------------
+IPv6 临时节点（新增）
+-----------------------------
+
+按分钟：
+id=tmpv6m PORT_START=41000 PORT_END=41000 IP_VERSION=6 IP_LIMIT=3 PQ_GIB=1 D=$((1*60)) vless_mktemp.sh
+
+按小时：
+id=tmpv6h PORT_START=41000 PORT_END=41000 IP_VERSION=6 IP_LIMIT=3 PQ_GIB=1 D=$((1*3600)) vless_mktemp.sh
+
+按天：
+id=tmpv6d PORT_START=41000 PORT_END=41000 IP_VERSION=6 IP_LIMIT=3 PQ_GIB=1 D=$((1*24*3600)) vless_mktemp.sh
+
+说明：
+- IPv6 临时节点会使用 PUBLIC_IPV6_DOMAIN 生成订阅链接。
+- IPv6 临时节点会监听 IPv6。
+- IPv6 临时节点会写入同一套 temp meta / url / systemd unit / GC / quota / IP-limit 管理体系。
+
+
+-----------------------------
+NAT 节点（原 IPv4 用法保持不变）
+-----------------------------
+
+按分钟：
+id=tmp1m PORT_START=40000 PORT_END=40000 IP_LIMIT=3 PQ_GIB=1 D=$((1*60)) MARK=2333 vless_mktemp_nat.sh
+
+按小时：
+id=tmp1h PORT_START=40000 PORT_END=40000 IP_LIMIT=3 PQ_GIB=1 D=$((1*3600)) MARK=2333 vless_mktemp_nat.sh
+
+按天：
+id=tmp1d PORT_START=40000 PORT_END=40000 IP_LIMIT=3 PQ_GIB=50 D=$((1*24*3600)) MARK=2333 vless_mktemp_nat.sh
+
+说明：
+- NAT 节点这里仍按原 IPv4 用法写。
+- 不要默认把 NAT 节点当成 IPv6 临时节点使用，除非你的 vless_mktemp_nat.sh 也明确新增了 IP_VERSION=6 支持。
+
+
+==================================================
+临时订阅文件
+==================================================
+
+单个临时节点的链接仍在：
+
+/var/lib/vless-reality/temp/<TAG>.url
+
+新版会额外生成全部未过期临时节点订阅：
+
+/root/vless_temp_subscription.txt
+/root/vless_temp_subscription_base64.txt
+
+查看全部临时节点原始订阅：
+
+cat /root/vless_temp_subscription.txt
+
+查看全部临时节点 Base64 订阅：
+
+cat /root/vless_temp_subscription_base64.txt
+
+说明：
+- IPv4 临时节点和 IPv6 临时节点都会进入这个临时订阅文件。
+- 临时节点创建后会自动刷新订阅。
+- 临时节点过期清理后也会自动刷新订阅。
+
+
+==================================================
+临时节点查看 / 删除 / 清空
+==================================================
+
+查看主节点 + 全部临时节点：
+
+vless_audit.sh
+
+
+查端口占用 IP：
+
+IPv4 端口示例：
+nft list set inet vr_iplimit vr_il_40003
+
+IPv6 端口示例：
+nft list set inet vr_iplimit vr_il6_41003
+
+说明：
+- IPv4 IP-limit set 名称是 vr_il_<端口>
+- IPv6 IP-limit set 名称是 vr_il6_<端口>
+
+
+强制删除某个指定临时节点：
+
+FORCE=1 vless_cleanup_one.sh vless-temp-tmp001
+
+IPv6 临时节点也是同样删除方式，例如：
+
+FORCE=1 vless_cleanup_one.sh vless-temp-tmpv6d
+
+
+强制按端口删除临时节点：
+
+PORT=40000; file=$(grep -l "^PORT=${PORT}$" /var/lib/vless-reality/temp/*.env 2>/dev/null | head -n1); [ -n "$file" ] || { echo "没找到端口 ${PORT} 对应的临时节点"; exit 1; }; TAG=${file##*/}; TAG=${TAG%.env}; echo "删除临时节点：PORT=${PORT}, TAG=${TAG}"; FORCE=1 /usr/local/sbin/vless_cleanup_one.sh "$TAG"
+
+IPv6 临时节点也一样，只要把 PORT 改成 IPv6 临时节点端口，例如：
+
+PORT=41000; file=$(grep -l "^PORT=${PORT}$" /var/lib/vless-reality/temp/*.env 2>/dev/null | head -n1); [ -n "$file" ] || { echo "没找到端口 ${PORT} 对应的临时节点"; exit 1; }; TAG=${file##*/}; TAG=${TAG%.env}; echo "删除临时节点：PORT=${PORT}, TAG=${TAG}"; FORCE=1 /usr/local/sbin/vless_cleanup_one.sh "$TAG"
+
+
+查某个端口订阅链接：
+
+p=40001; sh -c 'if [ "'"$p"'" = 443 ]; then cat /root/vless_reality_vision_url.txt; else tag=$(awk -F= '"'"'$1=="PORT" && $2=="'"$p"'" {sub(/\.env$/,"",FILENAME); n=split(FILENAME,a,"/"); print a[n]; exit}'"'"' /var/lib/vless-reality/temp/*.env 2>/dev/null); [ -n "$tag" ] && cat "/var/lib/vless-reality/temp/${tag}.url" || { echo "未找到端口 $p 的订阅链接" >&2; exit 1; }; fi'
+
+IPv6 临时节点也一样，只需要把 p 改成 IPv6 临时节点端口：
+
+p=41000; sh -c 'if [ "'"$p"'" = 443 ]; then cat /root/vless_reality_vision_url.txt; else tag=$(awk -F= '"'"'$1=="PORT" && $2=="'"$p"'" {sub(/\.env$/,"",FILENAME); n=split(FILENAME,a,"/"); print a[n]; exit}'"'"' /var/lib/vless-reality/temp/*.env 2>/dev/null); [ -n "$tag" ] && cat "/var/lib/vless-reality/temp/${tag}.url" || { echo "未找到端口 $p 的订阅链接" >&2; exit 1; }; fi'
+
+
+说明：
+- 不加 FORCE=1 时，如果该节点还没到期，脚本可能不删。
+- 加 FORCE=1 后，无视是否到期，直接清理。
+- 清理时会同时删除：
+  - xray 临时配置
+  - temp meta
+  - systemd unit
+  - url 文件
+  - 该端口对应的 quota 管理
+  - 该端口对应的 IP 限制管理
+  - 并刷新临时订阅文件
+
+清空全部临时节点：
+
+vless_clear_all.sh
+
+自动过期清理：
+- systemd 会通过 vless-gc.timer 定时运行 vless_gc.sh
+- 开机 2 分钟后开始
+- 每 1 分钟检查一次
+- 到期的临时节点会自动清理
+- IPv4 / IPv6 临时节点都会按同一套 GC 逻辑处理
+
+
+==================================================
+流量配额系统（按端口）
+==================================================
+
+手动给任意端口加总流量配额：
+
+pq_add.sh 40000 50
+# 给某个临时端口设置总配额 50GiB
+
+IPv6 临时节点端口也一样，例如：
+
+pq_add.sh 41000 50
+# 给 IPv6 临时端口设置总配额 50GiB
+
+查看所有端口配额：
+
+pq_audit.sh
+
+删除某个端口的配额：
+
+pq_del.sh 40000
+
+IPv6 临时节点端口同样按端口删除：
+
+pq_del.sh 41000
+
+说明：
+- 手动 pq_add.sh 加的配额，默认是 manual 类型。
+- 手动 pq_add.sh 加的配额默认不带 30 天自动重置。
+- 临时节点创建时带 PQ_GIB，会自动接入对应端口的 quota 管理。
+
+
+==================================================
+IP 限制系统（按端口补加 / 修改 / 删除）
+==================================================
+
+给已有 IPv4 端口补加或修改 IP 限制：
+
+ip_set.sh 40005 1
+# 给 40005 端口设为最多 1 个来源 IPv4，sticky 默认 120 秒
+
+ip_set.sh 40005 2
+# 改成最多 2 个来源 IPv4
+
+ip_set.sh 40005 2 300
+# 改成最多 2 个来源 IPv4，sticky 300 秒
+
+
+给已有 IPv6 临时端口补加或修改 IP 限制：
+
+ip_set.sh 41005 1
+# 如果 41005 是用 IP_VERSION=6 创建出来的临时端口，脚本会尽量沿用该端口 meta 里的 IP_VERSION=6
+
+ip_set.sh 41005 2
+# 改成最多 2 个来源 IPv6
+
+ip_set.sh 41005 2 300
+# 改成最多 2 个来源 IPv6，sticky 300 秒
+
+
+给非临时 IPv6 端口手动补加 IP 限制：
+
+IP_VERSION=6 ip_set.sh 41005 1
+
+说明：
+- ip_set.sh 用法：
+  ip_set.sh <端口> <limit> [sticky_seconds]
+- 如果是非临时 IPv6 端口，建议显式加：
+  IP_VERSION=6 ip_set.sh <端口> <limit> [sticky_seconds]
+- 如果这个端口本来就已有 IP 限制，但你不写 sticky_seconds，脚本会尽量沿用旧的 sticky 秒数。
+- 如果这个端口是某个临时节点端口，脚本会尽量把 OWNER_TAG 继续绑定到该临时节点。
+- 如果这个端口不是临时节点端口，就按 manual 类型处理。
+
+删除某个端口的 IP 限制：
+
+ip_del.sh 40005
+
+IPv6 端口同样按端口删除：
+
+ip_del.sh 41005
+
+说明：
+- ip_del.sh 用法：
+  ip_del.sh <端口>
+- 删除后，该端口对应的 nftables IP-limit 规则和 meta 会一起删掉。
+- 这是彻底解除该端口 IP 限制，不影响该端口本身节点继续运行。
+
+
+==================================================
+30 天自动重置流量配额
+==================================================
+
+哪些节点会自动启用 30 天重置：
+
+只有在创建临时节点时同时满足下面条件，才会自动启用：
+- 使用了 PQ_GIB
+- 并且 D > 2592000 秒（也就是严格大于 30 天）
+
+IPv4 示例：
+
+id=tmp31d IP_LIMIT=1 PQ_GIB=1 D=$((31*24*3600)) vless_mktemp.sh
+
+IPv6 示例：
+
+id=tmpv631d IP_VERSION=6 IP_LIMIT=1 PQ_GIB=1 D=$((31*24*3600)) vless_mktemp.sh
+
+自动重置后的效果：
+- SAVED_USED_BYTES 归零
+- LIMIT_BYTES 恢复为 ORIGINAL_LIMIT_BYTES
+- 对应端口的 nftables quota / counter 会重建
+- 继续从 0 重新计量
+
+自动重置的 systemd 定时器：
+- pq-reset.timer
+- 开机 15 分钟后开始
+- 每 1 小时检查一次是否到达 NEXT_RESET_EPOCH
+
+注意：
+- 手动 pq_add.sh 加的端口配额默认不会自动 30 天重置。
+- 只有临时节点创建时带 PQ_GIB 且 D > 30 天，才会写入 30 天重置字段。
+- IPv4 / IPv6 临时节点规则一致。
+
+
+==================================================
+自动保存 / 开机恢复 / 关机前保存
+==================================================
+
+配额自动保存：
+- pq-save.timer
+- 开机 5 分钟后开始
+- 每 5 分钟执行一次 pq_save_state.sh
+- 会把当前已用量写回 meta，并重建 quota/counter
+
+开机恢复：
+- vless-managed-restore.service
+- 开机时恢复：
+  - 配额规则
+  - IP 限制规则
+  - 并先执行 GC 清理过期节点
+
+关机 / 重启前保存：
+- vless-managed-shutdown-save.service
+- 在 shutdown / reboot / halt / poweroff / kexec 前执行 pq_save_state.sh
+
+说明：
+- IPv6 临时节点的 meta 中会记录 IP_VERSION=6。
+- 开机恢复 IP 限制时，会按 meta 中的 IP_VERSION 恢复 IPv4 或 IPv6 IP-limit set。
+
+
+==================================================
+IPv6 快速自检命令
+==================================================
+
+查看本机是否有公网 IPv6：
+
+ip -6 addr show scope global
+
+查看 PUBLIC_IPV6_DOMAIN 是否解析到 IPv6：
+
+getent ahostsv6 proxy-v6.example.com
+
+查看 IPv6 临时节点端口是否监听：
+
+ss -ltnp | grep 41000
+
+查看 IPv6 IP-limit set：
+
+nft list set inet vr_iplimit vr_il6_41000
+
+查看某个 IPv6 临时节点 meta：
+
+cat /var/lib/vless-reality/temp/vless-temp-tmpv6d.env
+
+应该能看到类似：
+
+IP_VERSION=6
+LISTEN_ADDR=::
+
+
+==================================================
+常见注意点
+==================================================
+
+1）不要只手动把 IPv4 链接改成 IPv6 地址
+
+原因：
+- 原 IPv4 节点监听的是 IPv4。
+- IPv6 节点必须由脚本创建时写入 IPv6 监听配置。
+- IPv6 IP 限制也必须走 ipv6_addr / ip6 saddr 规则。
+
+
+2）IPv6 字面量必须带中括号
+
+如果以后你不用域名，直接把 IPv6 地址写进链接，格式必须类似：
+
+vless://uuid@[2408:xxxx::1]:41000?type=tcp&security=reality...
+
+但推荐使用 PUBLIC_IPV6_DOMAIN，不推荐手改链接。
+
+
+3）云服务器安全组 / 防火墙也要放行 IPv6 端口
+
+例如你创建 IPv6 临时节点端口 41000，就要确认：
+- VPS 系统内 nftables 没有额外拦截
+- 云厂商安全组放行 IPv6 TCP 41000
+- PUBLIC_IPV6_DOMAIN 的 AAAA 记录正确
+
+
+4）IPv4 和 IPv6 临时节点可以共存
+
+示例：
+
+id=tmpv4 PORT_START=40000 PORT_END=40000 IP_LIMIT=3 PQ_GIB=1 D=$((1*3600)) vless_mktemp.sh
+id=tmpv6 PORT_START=41000 PORT_END=41000 IP_VERSION=6 IP_LIMIT=3 PQ_GIB=1 D=$((1*3600)) vless_mktemp.sh
+
+==================================================
