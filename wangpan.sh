@@ -3,14 +3,19 @@ set -Eeuo pipefail
 
 # ==================================================
 # 安全版 SimpleCloud + Jellyfin + Caddy Docker
+# 避免和 hy2 共存冲突版
 #
 # 推荐运行方式：
-#   CLOUD_DOMAIN="wangpan.liucna.com" VIDEO_DOMAIN="video.liucna.com" bash <(curl -fsSL "https://raw.githubusercontent.com/liucong552-art/jichang/refs/heads/main/wangpan.sh?$(date +%s)")
+#   rm -f /root/wangpan.sh
+#   curl -fsSL "https://raw.githubusercontent.com/liucong552-art/jichang/refs/heads/main/wangpan.sh?$(date +%s)" -o /root/wangpan.sh
+#   bash -n /root/wangpan.sh
+#   CLOUD_DOMAIN="wangpan.liucna.com" VIDEO_DOMAIN="video.liucna.com" bash /root/wangpan.sh
 #
 # 说明：
 #   - SimpleCloud 只监听 127.0.0.1:8080
 #   - Jellyfin 只监听 127.0.0.1:8096
-#   - Caddy Docker 对外监听 80/443，自动 HTTPS
+#   - Caddy Docker 对外监听 TCP 80/443，自动 HTTPS
+#   - Caddy 禁用 HTTP/3，避免占用 UDP 443，减少和 hy2 冲突
 #   - 公网不开放 8080/8096
 #   - 数据保存在 /data/cloud，不会因为重跑脚本被删除
 # ==================================================
@@ -22,6 +27,7 @@ SSH_PORT="${SSH_PORT:-22}"
 
 echo "=================================================="
 echo " 安全版 SimpleCloud + Jellyfin + Caddy Docker"
+echo " 避免和 hy2 共存冲突版"
 echo "=================================================="
 echo "文件管理域名: ${CLOUD_DOMAIN}"
 echo "视频域名:     ${VIDEO_DOMAIN}"
@@ -37,7 +43,7 @@ fi
 if [ "${CLOUD_DOMAIN}" = "${VIDEO_DOMAIN}" ]; then
   echo "错误：CLOUD_DOMAIN 和 VIDEO_DOMAIN 不能一样。"
   echo "例如："
-  echo "CLOUD_DOMAIN=\"wangpan.liucna.com\" VIDEO_DOMAIN=\"video.liucna.com\" bash <(curl -fsSL ...)"
+  echo "CLOUD_DOMAIN=\"wangpan.liucna.com\" VIDEO_DOMAIN=\"video.liucna.com\" bash /root/wangpan.sh"
   exit 1
 fi
 
@@ -118,6 +124,7 @@ mkdir -p /data/cloud/photos
 mkdir -p /data/cloud/backup
 
 chmod -R 775 /data/cloud
+chmod -R 775 /opt/mycloud
 
 echo "=== 7. 生成或保留 SimpleCloud 登录信息 ==="
 if [ -f /opt/simplecloud/config.env ]; then
@@ -598,15 +605,22 @@ docker run -d \
   --name mycloud-jellyfin \
   --restart unless-stopped \
   -p 127.0.0.1:8096:8096 \
+  -e PUID=0 \
+  -e PGID=0 \
   -e TZ="${TIMEZONE}" \
-  -u 1000:1000 \
   -v /opt/mycloud/jellyfin/config:/config \
   -v /opt/mycloud/jellyfin/cache:/cache \
   -v /data/cloud/media:/media \
-  jellyfin/jellyfin:latest
+  lscr.io/linuxserver/jellyfin:latest
 
-echo "=== 11. 写入 Caddyfile ==="
+echo "=== 11. 写入 Caddyfile，禁用 HTTP/3，避免和 hy2 抢 UDP 443 ==="
 cat > /opt/mycloud/caddy/Caddyfile <<CADDY
+{
+    servers {
+        protocols h1 h2
+    }
+}
+
 ${CLOUD_DOMAIN} {
     encode gzip zstd
     reverse_proxy 127.0.0.1:8080
@@ -618,7 +632,7 @@ ${VIDEO_DOMAIN} {
 }
 CADDY
 
-echo "=== 12. 安装 / 重建 Caddy Docker，只开放 80/443 ==="
+echo "=== 12. 安装 / 重建 Caddy Docker，只开放 TCP 80/443 ==="
 docker rm -f mycloud-caddy 2>/dev/null || true
 
 docker run -d \
@@ -642,7 +656,10 @@ ufw deny 8096/tcp || true
 
 ufw --force enable
 
-echo "=== 14. 保存登录信息 ==="
+echo "=== 14. 等待服务启动 ==="
+sleep 20
+
+echo "=== 15. 保存登录信息 ==="
 cat > /root/mycloud-info.txt <<INFO
 ==============================
 安全版 SimpleCloud + Jellyfin
@@ -684,7 +701,11 @@ ${SSH_PORT} / 80 / 443
 127.0.0.1:8096  Jellyfin
 
 Caddy：
-Docker 容器 mycloud-caddy，host 网络模式，负责 HTTPS 自动证书和反向代理。
+Docker 容器 mycloud-caddy，host 网络模式。
+已禁用 HTTP/3，只使用 HTTP/1.1 + HTTP/2，避免占用 UDP 443，减少与 hy2 冲突。
+
+Jellyfin：
+Docker 容器 mycloud-jellyfin，使用 linuxserver/jellyfin 镜像。
 
 常用命令：
 cat /root/mycloud-info.txt
@@ -694,6 +715,7 @@ docker logs mycloud-caddy --tail=100
 docker logs mycloud-jellyfin --tail=100
 docker restart mycloud-caddy
 docker restart mycloud-jellyfin
+docker ps -a
 ufw status
 df -h
 du -sh /data/cloud/media
@@ -710,8 +732,17 @@ docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
 ufw status
 
 echo
+echo "=== 本机端口测试 ==="
+curl -I http://127.0.0.1:8080 2>/dev/null || true
+curl -I http://127.0.0.1:8096 2>/dev/null || true
+
+echo
 echo "=== Caddy 日志最近 80 行 ==="
 docker logs mycloud-caddy --tail=80 || true
+
+echo
+echo "=== Jellyfin 日志最近 50 行 ==="
+docker logs mycloud-jellyfin --tail=50 || true
 
 echo
 echo "=== 提示 ==="
