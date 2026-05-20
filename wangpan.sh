@@ -4,12 +4,8 @@ set -Eeuo pipefail
 # ==================================================
 # 安全版 SimpleCloud + Jellyfin + Caddy Docker
 #
-# 默认域名：
-#   文件管理：https://hy2.liucna.com
-#   Jellyfin：https://video.hy2.liucna.com
-#
 # 推荐运行方式：
-#   CLOUD_DOMAIN="wangpan.liucna.com" VIDEO_DOMAIN="video.liucna.com" bash <(curl -fsSL https://raw.githubusercontent.com/liucong552-art/jichang/refs/heads/main/wangpan.sh)
+#   CLOUD_DOMAIN="wangpan.liucna.com" VIDEO_DOMAIN="video.liucna.com" bash <(curl -fsSL "https://raw.githubusercontent.com/liucong552-art/jichang/refs/heads/main/wangpan.sh?$(date +%s)")
 #
 # 说明：
 #   - SimpleCloud 只监听 127.0.0.1:8080
@@ -23,8 +19,6 @@ CLOUD_DOMAIN="${CLOUD_DOMAIN:-hy2.liucna.com}"
 VIDEO_DOMAIN="${VIDEO_DOMAIN:-video.hy2.liucna.com}"
 TIMEZONE="${TIMEZONE:-Asia/Shanghai}"
 SSH_PORT="${SSH_PORT:-22}"
-
-SCRIPT_URL="https://raw.githubusercontent.com/liucong552-art/jichang/refs/heads/main/wangpan.sh"
 
 echo "=================================================="
 echo " 安全版 SimpleCloud + Jellyfin + Caddy Docker"
@@ -40,15 +34,27 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-echo "=== 0. 检查系统 ==="
+if [ "${CLOUD_DOMAIN}" = "${VIDEO_DOMAIN}" ]; then
+  echo "错误：CLOUD_DOMAIN 和 VIDEO_DOMAIN 不能一样。"
+  echo "例如："
+  echo "CLOUD_DOMAIN=\"wangpan.liucna.com\" VIDEO_DOMAIN=\"video.liucna.com\" bash <(curl -fsSL ...)"
+  exit 1
+fi
+
+echo "=== 0. 最先清理旧 Caddy apt 源，避免 apt update 失败 ==="
+rm -f /etc/apt/sources.list.d/caddy-stable.list || true
+rm -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg || true
+systemctl disable --now caddy 2>/dev/null || true
+
+echo "=== 1. 检查系统 ==="
 cat /etc/os-release || true
 df -h /
 
-echo "=== 1. 安装基础工具 ==="
+echo "=== 2. 安装基础工具 ==="
 apt-get update
 apt-get install -y ca-certificates curl gnupg openssl ufw python3 apt-transport-https
 
-echo "=== 2. 获取服务器公网 IP ==="
+echo "=== 3. 获取服务器公网 IP ==="
 SERVER_IP="$(curl -4 -fsS https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
 echo "当前服务器公网 IP: ${SERVER_IP}"
 echo
@@ -57,7 +63,7 @@ echo "${CLOUD_DOMAIN}  ->  ${SERVER_IP}"
 echo "${VIDEO_DOMAIN}  ->  ${SERVER_IP}"
 echo
 
-echo "=== 3. 安装 Docker ==="
+echo "=== 4. 安装 Docker ==="
 if ! command -v docker >/dev/null 2>&1; then
   for pkg in docker.io docker-doc docker-compose podman-docker containerd runc; do
     apt-get remove -y "$pkg" 2>/dev/null || true
@@ -69,10 +75,19 @@ if ! command -v docker >/dev/null 2>&1; then
   OS_ID="$ID"
   OS_CODENAME="${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}"
 
-  if [ -z "$OS_CODENAME" ]; then
+  if [ -z "${OS_CODENAME}" ]; then
     echo "错误：无法识别系统版本代号。"
     exit 1
   fi
+
+  case "${OS_ID}" in
+    debian|ubuntu)
+      ;;
+    *)
+      echo "错误：当前脚本只建议用于 Debian / Ubuntu。当前系统 ID: ${OS_ID}"
+      exit 1
+      ;;
+  esac
 
   curl -fsSL "https://download.docker.com/linux/${OS_ID}/gpg" -o /etc/apt/keyrings/docker.asc
   chmod a+r /etc/apt/keyrings/docker.asc
@@ -85,12 +100,12 @@ fi
 
 systemctl enable --now docker
 
-echo "=== 4. 清理可能失败的 Caddy apt 源，避免 NO_PUBKEY 报错 ==="
-rm -f /etc/apt/sources.list.d/caddy-stable.list
-rm -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+echo "=== 5. 再次清理旧 Caddy apt 源和旧 Caddy 服务 ==="
+rm -f /etc/apt/sources.list.d/caddy-stable.list || true
+rm -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg || true
 systemctl disable --now caddy 2>/dev/null || true
 
-echo "=== 5. 创建数据目录 ==="
+echo "=== 6. 创建数据目录 ==="
 mkdir -p /opt/simplecloud
 mkdir -p /opt/mycloud/jellyfin/config
 mkdir -p /opt/mycloud/jellyfin/cache
@@ -104,7 +119,7 @@ mkdir -p /data/cloud/backup
 
 chmod -R 775 /data/cloud
 
-echo "=== 6. 生成或保留 SimpleCloud 登录信息 ==="
+echo "=== 7. 生成或保留 SimpleCloud 登录信息 ==="
 if [ -f /opt/simplecloud/config.env ]; then
   # shellcheck disable=SC1091
   . /opt/simplecloud/config.env
@@ -123,7 +138,7 @@ ENV
 
 chmod 600 /opt/simplecloud/config.env
 
-echo "=== 7. 写入 SimpleCloud 程序 ==="
+echo "=== 8. 写入 SimpleCloud 程序 ==="
 cat > /opt/simplecloud/simplecloud.py <<'PY'
 #!/usr/bin/env python3
 import os
@@ -554,7 +569,7 @@ PY
 
 chmod +x /opt/simplecloud/simplecloud.py
 
-echo "=== 8. 创建 SimpleCloud systemd 服务 ==="
+echo "=== 9. 创建 SimpleCloud systemd 服务 ==="
 cat > /etc/systemd/system/simplecloud.service <<'SERVICE'
 [Unit]
 Description=SimpleCloud Web File Manager
@@ -576,7 +591,7 @@ systemctl daemon-reload
 systemctl enable --now simplecloud
 systemctl restart simplecloud
 
-echo "=== 9. 安装 / 重建 Jellyfin 容器，只监听本机 127.0.0.1:8096 ==="
+echo "=== 10. 安装 / 重建 Jellyfin 容器，只监听本机 127.0.0.1:8096 ==="
 docker rm -f mycloud-jellyfin 2>/dev/null || true
 
 docker run -d \
@@ -590,7 +605,7 @@ docker run -d \
   -v /data/cloud/media:/media \
   jellyfin/jellyfin:latest
 
-echo "=== 10. 写入 Caddyfile ==="
+echo "=== 11. 写入 Caddyfile ==="
 cat > /opt/mycloud/caddy/Caddyfile <<CADDY
 ${CLOUD_DOMAIN} {
     encode gzip zstd
@@ -603,7 +618,7 @@ ${VIDEO_DOMAIN} {
 }
 CADDY
 
-echo "=== 11. 安装 / 重建 Caddy Docker，只开放 80/443 ==="
+echo "=== 12. 安装 / 重建 Caddy Docker，只开放 80/443 ==="
 docker rm -f mycloud-caddy 2>/dev/null || true
 
 docker run -d \
@@ -615,7 +630,7 @@ docker run -d \
   -v /opt/mycloud/caddy/config:/config \
   caddy:2-alpine
 
-echo "=== 12. 防火墙：只开放 SSH / HTTP / HTTPS，关闭原始端口 ==="
+echo "=== 13. 防火墙：只开放 SSH / HTTP / HTTPS，关闭原始端口 ==="
 ufw allow "${SSH_PORT}/tcp" || true
 ufw allow 80/tcp || true
 ufw allow 443/tcp || true
@@ -627,7 +642,7 @@ ufw deny 8096/tcp || true
 
 ufw --force enable
 
-echo "=== 13. 保存登录信息 ==="
+echo "=== 14. 保存登录信息 ==="
 cat > /root/mycloud-info.txt <<INFO
 ==============================
 安全版 SimpleCloud + Jellyfin
@@ -695,8 +710,8 @@ docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
 ufw status
 
 echo
-echo "=== Caddy 日志最近 50 行 ==="
-docker logs mycloud-caddy --tail=50 || true
+echo "=== Caddy 日志最近 80 行 ==="
+docker logs mycloud-caddy --tail=80 || true
 
 echo
 echo "=== 提示 ==="
