@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
-set -e
+set -Eeuo pipefail
 
 # ==================================================
-# 安全版 SimpleCloud + Jellyfin 一键安装脚本
-# 作者自用版
+# 安全版 SimpleCloud + Jellyfin + Caddy Docker
 #
 # 默认域名：
 #   文件管理：https://hy2.liucna.com
 #   Jellyfin：https://video.hy2.liucna.com
 #
-# 自定义域名运行方式：
-#   CLOUD_DOMAIN=cloud.example.com VIDEO_DOMAIN=video.example.com bash wangpan.sh
+# 推荐运行方式：
+#   CLOUD_DOMAIN="wangpan.liucna.com" VIDEO_DOMAIN="video.liucna.com" bash <(curl -fsSL https://raw.githubusercontent.com/liucong552-art/jichang/refs/heads/main/wangpan.sh)
+#
+# 说明：
+#   - SimpleCloud 只监听 127.0.0.1:8080
+#   - Jellyfin 只监听 127.0.0.1:8096
+#   - Caddy Docker 对外监听 80/443，自动 HTTPS
+#   - 公网不开放 8080/8096
+#   - 数据保存在 /data/cloud，不会因为重跑脚本被删除
 # ==================================================
 
 CLOUD_DOMAIN="${CLOUD_DOMAIN:-hy2.liucna.com}"
@@ -18,8 +24,10 @@ VIDEO_DOMAIN="${VIDEO_DOMAIN:-video.hy2.liucna.com}"
 TIMEZONE="${TIMEZONE:-Asia/Shanghai}"
 SSH_PORT="${SSH_PORT:-22}"
 
+SCRIPT_URL="https://raw.githubusercontent.com/liucong552-art/jichang/refs/heads/main/wangpan.sh"
+
 echo "=================================================="
-echo " 安全版 SimpleCloud + Jellyfin 一键安装"
+echo " 安全版 SimpleCloud + Jellyfin + Caddy Docker"
 echo "=================================================="
 echo "文件管理域名: ${CLOUD_DOMAIN}"
 echo "视频域名:     ${VIDEO_DOMAIN}"
@@ -28,7 +36,7 @@ echo "SSH端口:      ${SSH_PORT}"
 echo "=================================================="
 
 if [ "$(id -u)" -ne 0 ]; then
-  echo "请使用 root 用户执行。"
+  echo "错误：请使用 root 用户执行。"
   exit 1
 fi
 
@@ -38,7 +46,7 @@ df -h /
 
 echo "=== 1. 安装基础工具 ==="
 apt-get update
-apt-get install -y ca-certificates curl gnupg openssl ufw python3 apt-transport-https debian-keyring debian-archive-keyring
+apt-get install -y ca-certificates curl gnupg openssl ufw python3 apt-transport-https
 
 echo "=== 2. 获取服务器公网 IP ==="
 SERVER_IP="$(curl -4 -fsS https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
@@ -62,7 +70,7 @@ if ! command -v docker >/dev/null 2>&1; then
   OS_CODENAME="${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}"
 
   if [ -z "$OS_CODENAME" ]; then
-    echo "无法识别系统版本代号。"
+    echo "错误：无法识别系统版本代号。"
     exit 1
   fi
 
@@ -77,21 +85,17 @@ fi
 
 systemctl enable --now docker
 
-echo "=== 4. 安装 Caddy ==="
-if ! command -v caddy >/dev/null 2>&1; then
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' -o /etc/apt/sources.list.d/caddy-stable.list
-
-  apt-get update
-  apt-get install -y caddy
-fi
-
-systemctl enable --now caddy
+echo "=== 4. 清理可能失败的 Caddy apt 源，避免 NO_PUBKEY 报错 ==="
+rm -f /etc/apt/sources.list.d/caddy-stable.list
+rm -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+systemctl disable --now caddy 2>/dev/null || true
 
 echo "=== 5. 创建数据目录 ==="
 mkdir -p /opt/simplecloud
 mkdir -p /opt/mycloud/jellyfin/config
 mkdir -p /opt/mycloud/jellyfin/cache
+mkdir -p /opt/mycloud/caddy/data
+mkdir -p /opt/mycloud/caddy/config
 
 mkdir -p /data/cloud/media
 mkdir -p /data/cloud/files
@@ -102,12 +106,13 @@ chmod -R 775 /data/cloud
 
 echo "=== 6. 生成或保留 SimpleCloud 登录信息 ==="
 if [ -f /opt/simplecloud/config.env ]; then
+  # shellcheck disable=SC1091
   . /opt/simplecloud/config.env
   CLOUD_USER="${CLOUD_USER:-admin}"
-  CLOUD_PASS="${CLOUD_PASS:-$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 20)}"
+  CLOUD_PASS="${CLOUD_PASS:-$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 20)}"
 else
   CLOUD_USER="admin"
-  CLOUD_PASS="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 20)"
+  CLOUD_PASS="$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 20)"
 fi
 
 cat > /opt/simplecloud/config.env <<ENV
@@ -585,8 +590,8 @@ docker run -d \
   -v /data/cloud/media:/media \
   jellyfin/jellyfin:latest
 
-echo "=== 10. 写入 Caddy HTTPS 反向代理配置 ==="
-cat > /etc/caddy/Caddyfile <<CADDY
+echo "=== 10. 写入 Caddyfile ==="
+cat > /opt/mycloud/caddy/Caddyfile <<CADDY
 ${CLOUD_DOMAIN} {
     encode gzip zstd
     reverse_proxy 127.0.0.1:8080
@@ -598,10 +603,19 @@ ${VIDEO_DOMAIN} {
 }
 CADDY
 
-caddy validate --config /etc/caddy/Caddyfile
-systemctl restart caddy
+echo "=== 11. 安装 / 重建 Caddy Docker，只开放 80/443 ==="
+docker rm -f mycloud-caddy 2>/dev/null || true
 
-echo "=== 11. 防火墙：只开放 SSH / HTTP / HTTPS，关闭原始端口 ==="
+docker run -d \
+  --name mycloud-caddy \
+  --restart unless-stopped \
+  --network host \
+  -v /opt/mycloud/caddy/Caddyfile:/etc/caddy/Caddyfile:ro \
+  -v /opt/mycloud/caddy/data:/data \
+  -v /opt/mycloud/caddy/config:/config \
+  caddy:2-alpine
+
+echo "=== 12. 防火墙：只开放 SSH / HTTP / HTTPS，关闭原始端口 ==="
 ufw allow "${SSH_PORT}/tcp" || true
 ufw allow 80/tcp || true
 ufw allow 443/tcp || true
@@ -613,7 +627,7 @@ ufw deny 8096/tcp || true
 
 ufw --force enable
 
-echo "=== 12. 保存登录信息 ==="
+echo "=== 13. 保存登录信息 ==="
 cat > /root/mycloud-info.txt <<INFO
 ==============================
 安全版 SimpleCloud + Jellyfin
@@ -648,21 +662,26 @@ Jellyfin 添加媒体库：
 文件夹路径：/media
 
 公网开放端口：
-22 / 80 / 443
+${SSH_PORT} / 80 / 443
 
 本机内部端口：
 127.0.0.1:8080  SimpleCloud
 127.0.0.1:8096  Jellyfin
 
+Caddy：
+Docker 容器 mycloud-caddy，host 网络模式，负责 HTTPS 自动证书和反向代理。
+
 常用命令：
 cat /root/mycloud-info.txt
 systemctl status simplecloud --no-pager
 journalctl -u simplecloud -f
-systemctl status caddy --no-pager
-journalctl -u caddy -f
+docker logs mycloud-caddy --tail=100
 docker logs mycloud-jellyfin --tail=100
+docker restart mycloud-caddy
 docker restart mycloud-jellyfin
 ufw status
+df -h
+du -sh /data/cloud/media
 INFO
 
 echo
@@ -672,6 +691,15 @@ cat /root/mycloud-info.txt
 echo
 echo "=== 服务状态 ==="
 systemctl status simplecloud --no-pager -l | tail -n 15 || true
-systemctl status caddy --no-pager -l | tail -n 15 || true
 docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
 ufw status
+
+echo
+echo "=== Caddy 日志最近 50 行 ==="
+docker logs mycloud-caddy --tail=50 || true
+
+echo
+echo "=== 提示 ==="
+echo "如果 HTTPS 暂时打不开，请确认 DNS 已经解析到当前 IP：${SERVER_IP}"
+echo "文件管理：https://${CLOUD_DOMAIN}"
+echo "Jellyfin：https://${VIDEO_DOMAIN}"
