@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 # ==================================================
 # 安全版 SimpleCloud + Jellyfin + Caddy Docker
+# 支持：网页管理 / 下载 / 删除 / 新建文件夹 / 改名
 # 避免和 hy2 共存冲突版
 #
 # 推荐运行方式：
@@ -27,7 +28,7 @@ SSH_PORT="${SSH_PORT:-22}"
 
 echo "=================================================="
 echo " 安全版 SimpleCloud + Jellyfin + Caddy Docker"
-echo " 避免和 hy2 共存冲突版"
+echo " 支持网页改名 / 避免和 hy2 共存冲突版"
 echo "=================================================="
 echo "文件管理域名: ${CLOUD_DOMAIN}"
 echo "视频域名:     ${VIDEO_DOMAIN}"
@@ -145,7 +146,7 @@ ENV
 
 chmod 600 /opt/simplecloud/config.env
 
-echo "=== 8. 写入 SimpleCloud 程序 ==="
+echo "=== 8. 写入 SimpleCloud 程序：支持改名 ==="
 cat > /opt/simplecloud/simplecloud.py <<'PY'
 #!/usr/bin/env python3
 import os
@@ -168,6 +169,12 @@ def safe_path(url_path):
     if not (full == root or full.startswith(root + os.sep)):
         raise ValueError("bad path")
     return full, rel
+
+def safe_name(name):
+    name = os.path.basename(name.strip())
+    if name in ["", ".", ".."]:
+        return ""
+    return name
 
 def human_size(n):
     try:
@@ -253,19 +260,30 @@ class Handler(BaseHTTPRequestHandler):
             href = "/" + urllib.parse.quote((rel + "/" + name).strip("/"))
             esc = html.escape(name)
 
+            rename_form = f'''
+<form method="post" class="inline-form">
+<input type="hidden" name="action" value="rename">
+<input type="hidden" name="target" value="{esc}">
+<input class="rename-input" name="newname" placeholder="新名称">
+<button>改名</button>
+</form>
+'''
+
+            delete_form = f'''
+<form method="post" class="inline-form" onsubmit="return confirm('确定删除 {esc} ?')">
+<input type="hidden" name="action" value="delete">
+<input type="hidden" name="target" value="{esc}">
+<button class="danger">删除</button>
+</form>
+'''
+
             if os.path.isdir(path):
                 rows.append(f'''
 <tr>
 <td>📁</td>
 <td><a href="{href}">{esc}/</a></td>
 <td>-</td>
-<td>
-<form method="post" style="display:inline" onsubmit="return confirm('确定删除文件夹 {esc} ?')">
-<input type="hidden" name="action" value="delete">
-<input type="hidden" name="target" value="{esc}">
-<button class="danger">删除</button>
-</form>
-</td>
+<td>{rename_form}{delete_form}</td>
 </tr>
 ''')
             else:
@@ -277,11 +295,8 @@ class Handler(BaseHTTPRequestHandler):
 <td>{size}</td>
 <td>
 <a class="btn" href="{href}">下载</a>
-<form method="post" style="display:inline" onsubmit="return confirm('确定删除 {esc} ?')">
-<input type="hidden" name="action" value="delete">
-<input type="hidden" name="target" value="{esc}">
-<button class="danger">删除</button>
-</form>
+{rename_form}
+{delete_form}
 </td>
 </tr>
 ''')
@@ -305,7 +320,7 @@ body {{
   padding: 16px 24px;
 }}
 .container {{
-  max-width: 1100px;
+  max-width: 1200px;
   margin: 24px auto;
   padding: 0 16px;
 }}
@@ -325,10 +340,13 @@ body {{
   gap: 12px;
   grid-template-columns: 1fr;
 }}
-input[type=file], input[type=text] {{
-  padding: 10px;
+input[type=file], input[type=text], .rename-input {{
+  padding: 8px;
   border: 1px solid #ddd;
   border-radius: 8px;
+}}
+.rename-input {{
+  width: 150px;
 }}
 button, .btn {{
   background: #1677ff;
@@ -339,6 +357,7 @@ button, .btn {{
   cursor: pointer;
   text-decoration: none;
   display: inline-block;
+  margin: 2px;
 }}
 button:hover, .btn:hover {{
   opacity: .9;
@@ -355,6 +374,7 @@ td, th {{
   border-bottom: 1px solid #eee;
   padding: 10px;
   text-align: left;
+  vertical-align: middle;
 }}
 .progress-wrap {{
   display: none;
@@ -372,6 +392,9 @@ progress {{
 .quick a {{
   margin-right: 8px;
   margin-bottom: 8px;
+}}
+.inline-form {{
+  display: inline-block;
 }}
 </style>
 </head>
@@ -403,8 +426,8 @@ progress {{
     <progress id="progressBar" value="0" max="100"></progress>
   </div>
   <p class="note">
-    视频请上传到 <b>/media</b>。上传完成后去 Jellyfin 扫描媒体库。
-    大文件上传时不要关闭浏览器，不要让电脑睡眠。
+    大视频建议用 PowerShell sftp 上传；网页上传适合小文件。视频请放到 <b>/media</b>。
+    改名时请填写完整文件名，包括后缀，例如：<b>电影.mp4</b>。
   </p>
 </div>
 
@@ -549,18 +572,37 @@ function uploadFiles() {{
             action = params.get("action", [""])[0]
 
             if action == "delete":
-                target = os.path.basename(params.get("target", [""])[0])
-                dest = os.path.join(full, target)
-                if os.path.isfile(dest):
-                    os.remove(dest)
-                elif os.path.isdir(dest):
-                    shutil.rmtree(dest)
+                target = safe_name(params.get("target", [""])[0])
+                if target:
+                    dest = os.path.join(full, target)
+                    if os.path.isfile(dest):
+                        os.remove(dest)
+                    elif os.path.isdir(dest):
+                        shutil.rmtree(dest)
 
             elif action == "mkdir":
-                dirname = os.path.basename(params.get("dirname", [""])[0].strip())
+                dirname = safe_name(params.get("dirname", [""])[0])
                 if dirname:
                     os.makedirs(os.path.join(full, dirname), exist_ok=True)
                     os.chmod(os.path.join(full, dirname), 0o775)
+
+            elif action == "rename":
+                target = safe_name(params.get("target", [""])[0])
+                newname = safe_name(params.get("newname", [""])[0])
+
+                if target and newname:
+                    src = os.path.join(full, target)
+                    dst = os.path.join(full, newname)
+
+                    if not os.path.exists(src):
+                        self.send_error(404, "原文件不存在")
+                        return
+
+                    if os.path.exists(dst):
+                        self.send_error(409, "新名称已存在")
+                        return
+
+                    os.rename(src, dst)
 
         self.send_response(303)
         self.send_header("Location", self.path)
@@ -644,7 +686,45 @@ docker run -d \
   -v /opt/mycloud/caddy/config:/config \
   caddy:2-alpine
 
-echo "=== 13. 防火墙：只开放 SSH / HTTP / HTTPS，关闭原始端口 ==="
+echo "=== 13. 安装常用工具：fix-mp4 / media-perm ==="
+cat > /usr/local/sbin/fix-mp4 <<'EOF'
+#!/usr/bin/env bash
+set -e
+
+if [ -z "${1:-}" ]; then
+  echo "用法：fix-mp4 文件名.mp4"
+  echo "例子：fix-mp4 upload_0001.mp4"
+  exit 1
+fi
+
+FILE="$1"
+BASE="${FILE%.*}"
+EXT="${FILE##*.}"
+OUT="fixed_${BASE}.${EXT}"
+
+docker exec mycloud-jellyfin bash -lc '
+cd /media
+/usr/lib/jellyfin-ffmpeg/ffmpeg -y -i "$0" -map 0 -c copy -movflags +faststart "$1"
+' "$FILE" "$OUT"
+
+find /data/cloud -type d -exec chmod 775 {} \;
+find /data/cloud -type f -exec chmod 664 {} \;
+
+echo "完成：${OUT}"
+echo "这是无损重封装，不会降低画质。现在去 Jellyfin 扫描媒体库。"
+EOF
+
+cat > /usr/local/sbin/media-perm <<'EOF'
+#!/usr/bin/env bash
+set -e
+find /data/cloud -type d -exec chmod 775 {} \;
+find /data/cloud -type f -exec chmod 664 {} \;
+echo "权限已修复：/data/cloud"
+EOF
+
+chmod +x /usr/local/sbin/fix-mp4 /usr/local/sbin/media-perm
+
+echo "=== 14. 防火墙：只开放 SSH / HTTP / HTTPS，关闭原始端口 ==="
 ufw allow "${SSH_PORT}/tcp" || true
 ufw allow 80/tcp || true
 ufw allow 443/tcp || true
@@ -656,10 +736,10 @@ ufw deny 8096/tcp || true
 
 ufw --force enable
 
-echo "=== 14. 等待服务启动 ==="
+echo "=== 15. 等待服务启动 ==="
 sleep 20
 
-echo "=== 15. 保存登录信息 ==="
+echo "=== 16. 保存登录信息 ==="
 cat > /root/mycloud-info.txt <<INFO
 ==============================
 安全版 SimpleCloud + Jellyfin
@@ -707,6 +787,9 @@ Docker 容器 mycloud-caddy，host 网络模式。
 Jellyfin：
 Docker 容器 mycloud-jellyfin，使用 linuxserver/jellyfin 镜像。
 
+网页功能：
+查看 / 下载 / 删除 / 新建文件夹 / 改名
+
 常用命令：
 cat /root/mycloud-info.txt
 systemctl status simplecloud --no-pager
@@ -719,6 +802,8 @@ docker ps -a
 ufw status
 df -h
 du -sh /data/cloud/media
+media-perm
+fix-mp4 文件名.mp4
 INFO
 
 echo
@@ -749,3 +834,4 @@ echo "=== 提示 ==="
 echo "如果 HTTPS 暂时打不开，请确认 DNS 已经解析到当前 IP：${SERVER_IP}"
 echo "文件管理：https://${CLOUD_DOMAIN}"
 echo "Jellyfin：https://${VIDEO_DOMAIN}"
+echo "网页已支持改名功能。改名时请填写完整文件名，包括后缀。"
