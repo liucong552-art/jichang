@@ -1,4 +1,4 @@
-DOMAIN="hy21.liucna.com"
+DOMAIN="helan114.666app.top"
 
 set -Eeuo pipefail
 
