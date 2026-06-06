@@ -1,4 +1,4 @@
-DOMAIN="helan114.666app.top"
+DOMAIN="ribendaban.666app.top"
 
 set -Eeuo pipefail
 
