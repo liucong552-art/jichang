@@ -1,4 +1,4 @@
-DOMAIN="hanguo.liucna.com"
+DOMAIN="riben.666app.top"
 
 set -Eeuo pipefail
 
